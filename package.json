@@ -7,8 +7,7 @@
   "main": "build/index.js",
   "type": "module",
   "bin": {
-    "xcodebuildmcp": "build/index.js",
-    "xcodebuildmcp-doctor": "build/doctor-cli.js"
+    "xcodebuildmcp": "build/index.js"
   },
   "scripts": {
     "build": "node -e \"const fs = require('fs'); const pkg = require('./package.json'); fs.writeFileSync('src/version.ts', \\`export const version = '\\${pkg.version}';\\nexport const iOSTemplateVersion = '\\${pkg.iOSTemplateVersion}';\\nexport const macOSTemplateVersion = '\\${pkg.macOSTemplateVersion}';\\n\\`)\" && tsup",
