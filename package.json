@@ -1,0 +1,90 @@
+{
+  "name": "xcodebuildmcp",
+  "version": "1.14.1",
+  "mcpName": "com.xcodebuildmcp/XcodeBuildMCP",
+  "iOSTemplateVersion": "v1.0.8",
+  "macOSTemplateVersion": "v1.0.5",
+  "main": "build/index.js",
+  "type": "module",
+  "bin": {
+    "xcodebuildmcp": "build/index.js",
+    "xcodebuildmcp-doctor": "build/doctor-cli.js"
+  },
+  "scripts": {
+    "build": "node -e \"const fs = require('fs'); const pkg = require('./package.json'); fs.writeFileSync('src/version.ts', \\`export const version = '\\${pkg.version}';\\nexport const iOSTemplateVersion = '\\${pkg.iOSTemplateVersion}';\\nexport const macOSTemplateVersion = '\\${pkg.macOSTemplateVersion}';\\n\\`)\" && tsup",
+    "dev": "npm run build && tsup --watch",
+    "bundle:axe": "scripts/bundle-axe.sh",
+    "lint": "eslint 'src/**/*.{js,ts}'",
+    "lint:fix": "eslint 'src/**/*.{js,ts}' --fix",
+    "format": "prettier --write 'src/**/*.{js,ts}'",
+    "format:check": "prettier --check 'src/**/*.{js,ts}'",
+    "typecheck": "npx tsc --noEmit",
+    "inspect": "npx @modelcontextprotocol/inspector node build/index.js",
+    "doctor": "node build/doctor-cli.js",
+    "tools": "npx tsx scripts/tools-cli.ts",
+    "tools:list": "npx tsx scripts/tools-cli.ts list",
+    "tools:static": "npx tsx scripts/tools-cli.ts static",
+    "tools:count": "npx tsx scripts/tools-cli.ts count --static",
+    "tools:analysis": "npx tsx scripts/analysis/tools-analysis.ts",
+    "docs:update": "npx tsx scripts/update-tools-docs.ts",
+    "docs:update:dry-run": "npx tsx scripts/update-tools-docs.ts --dry-run --verbose",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage"
+  },
+  "files": [
+    "build",
+    "bundled",
+    "plugins"
+  ],
+  "keywords": [
+    "xcodebuild",
+    "mcp",
+    "modelcontextprotocol",
+    "xcode",
+    "ios",
+    "macos",
+    "simulator"
+  ],
+  "author": "Cameron Cooke",
+  "license": "MIT",
+  "description": "XcodeBuildMCP is a ModelContextProtocol server that provides tools for Xcode project management, simulator management, and app utilities.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cameroncooke/XcodeBuildMCP.git"
+  },
+  "homepage": "https://www.async-let.com/blog/xcodebuild-mcp/",
+  "bugs": {
+    "url": "https://github.com/cameroncooke/XcodeBuildMCP/issues"
+  },
+  "dependencies": {
+    "@camsoft/mcp-sdk": "^1.17.1",
+    "@sentry/cli": "^2.43.1",
+    "@sentry/node": "^10.5.0",
+    "uuid": "^11.1.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@bacons/xcode": "^1.0.0-alpha.24",
+    "@eslint/eslintrc": "^3.3.1",
+    "@eslint/js": "^9.23.0",
+    "@types/node": "^22.13.6",
+    "@typescript-eslint/eslint-plugin": "^8.28.0",
+    "@typescript-eslint/parser": "^8.28.0",
+    "@vitest/coverage-v8": "^3.2.4",
+    "@vitest/ui": "^3.2.4",
+    "eslint": "^9.23.0",
+    "eslint-config-prettier": "^10.1.1",
+    "eslint-plugin-prettier": "^5.2.5",
+    "playwright": "^1.53.0",
+    "prettier": "^3.5.3",
+    "ts-node": "^10.9.2",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.4",
+    "typescript": "^5.8.2",
+    "typescript-eslint": "^8.28.0",
+    "vitest": "^3.2.4",
+    "xcode": "^3.0.1"
+  }
+}

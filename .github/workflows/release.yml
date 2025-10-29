@@ -1,0 +1,216 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Test version (e.g., 1.9.1-test)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Clear npm cache and install dependencies
+        run: |
+          npm cache clean --force
+          rm -rf node_modules package-lock.json
+          npm install --ignore-scripts
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Bundle AXe artifacts
+        run: npm run bundle:axe
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Run tests
+        run: npm test
+
+      - name: Get version from tag or input
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+            echo "IS_TEST=true" >> $GITHUB_OUTPUT
+            echo "📝 Test version: $VERSION"
+            # Update package.json version for test releases only
+            npm version $VERSION --no-git-tag-version
+          else
+            VERSION=${GITHUB_REF#refs/tags/v}
+            echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+            echo "IS_TEST=false" >> $GITHUB_OUTPUT
+            echo "🚀 Release version: $VERSION"
+            # For tag-based releases, package.json was already updated by release script
+          fi
+
+      - name: Create package
+        run: npm pack
+
+      - name: Test publish (dry run for manual triggers)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "🧪 Testing package creation (dry run)"
+          npm publish --dry-run --access public
+
+      - name: Publish to NPM (production releases only)
+        if: github.event_name == 'push'
+        run: |
+          VERSION="${{ steps.get_version.outputs.VERSION }}"
+          # Skip if this exact version is already published (idempotent reruns)
+          if npm view xcodebuildmcp@"$VERSION" version >/dev/null 2>&1; then
+            echo "✅ xcodebuildmcp@$VERSION already on NPM. Skipping publish."
+            exit 0
+          fi
+          # Determine the appropriate npm tag based on version
+          if [[ "$VERSION" == *"-beta"* ]]; then
+            NPM_TAG="beta"
+          elif [[ "$VERSION" == *"-alpha"* ]]; then
+            NPM_TAG="alpha"
+          elif [[ "$VERSION" == *"-rc"* ]]; then
+            NPM_TAG="rc"
+          else
+            # For stable releases, explicitly use latest tag
+            NPM_TAG="latest"
+          fi
+          echo "📦 Publishing to NPM with tag: $NPM_TAG"
+          npm publish --access public --tag "$NPM_TAG"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release (production releases only)
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.get_version.outputs.VERSION }}
+          name: Release v${{ steps.get_version.outputs.VERSION }}
+          body: |
+            ## Release v${{ steps.get_version.outputs.VERSION }}
+            
+            ### Features
+            - Bundled AXe binary and frameworks for zero-setup UI automation
+            - No manual installation required - works out of the box
+            
+            ### Installation
+            ```bash
+            npm install -g xcodebuildmcp@${{ steps.get_version.outputs.VERSION }}
+            ```
+            
+            Or use with npx:
+            ```bash
+            npx xcodebuildmcp@${{ steps.get_version.outputs.VERSION }}
+            ```
+            
+            📦 **NPM Package**: https://www.npmjs.com/package/xcodebuildmcp/v/${{ steps.get_version.outputs.VERSION }}
+            
+            ### What's Included
+            - Latest AXe binary from [cameroncooke/axe](https://github.com/cameroncooke/axe)
+            - All required frameworks (FBControlCore, FBDeviceControl, FBSimulatorControl, XCTestBootstrap)
+            - Full XcodeBuildMCP functionality with UI automation support
+          files: |
+            xcodebuildmcp-${{ steps.get_version.outputs.VERSION }}.tgz
+          draft: false
+          prerelease: false
+
+      - name: Summary
+        run: |
+          if [ "${{ steps.get_version.outputs.IS_TEST }}" = "true" ]; then
+            echo "🧪 Test completed for version: ${{ steps.get_version.outputs.VERSION }}"
+            echo "Ready for production release!"
+          else
+            echo "🎉 Production release completed!"
+            echo "Version: ${{ steps.get_version.outputs.VERSION }}"
+            echo "📦 NPM: https://www.npmjs.com/package/xcodebuildmcp/v/${{ steps.get_version.outputs.VERSION }}"
+            echo "📚 MCP Registry: publish attempted in separate job (mcp_registry)"
+          fi
+
+  mcp_registry:
+    if: github.event_name == 'push'
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      MCP_DNS_PRIVATE_KEY: ${{ secrets.MCP_DNS_PRIVATE_KEY }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from tag
+        id: get_version_mcp
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "🚢 MCP publish for version: $VERSION"
+
+      - name: Missing secret — skip MCP publish
+        if: env.MCP_DNS_PRIVATE_KEY == ''
+        run: |
+          echo "⚠️ Skipping MCP Registry publish: secrets.MCP_DNS_PRIVATE_KEY is not set."
+          echo "This is optional and does not affect the release."
+
+      - name: Setup Go (for MCP Publisher)
+        if: env.MCP_DNS_PRIVATE_KEY != ''
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install MCP Publisher
+        if: env.MCP_DNS_PRIVATE_KEY != ''
+        run: |
+          echo "📥 Fetching MCP Publisher"
+          git clone https://github.com/modelcontextprotocol/registry publisher-repo
+          cd publisher-repo
+          make publisher
+          cp bin/mcp-publisher ../mcp-publisher
+          cd ..
+          chmod +x mcp-publisher
+
+      - name: Login to MCP Registry (DNS)
+        if: env.MCP_DNS_PRIVATE_KEY != ''
+        run: |
+          echo "🔐 Using DNS authentication for com.xcodebuildmcp/* namespace"
+          ./mcp-publisher login dns --domain xcodebuildmcp.com --private-key "${MCP_DNS_PRIVATE_KEY}"
+
+      - name: Publish to MCP Registry (best-effort)
+        if: env.MCP_DNS_PRIVATE_KEY != ''
+        run: |
+          echo "🚢 Publishing to MCP Registry with retries..."
+          attempts=0
+          max_attempts=5
+          delay=5
+          until ./mcp-publisher publish; do
+            rc=$?
+            attempts=$((attempts+1))
+            if [ $attempts -ge $max_attempts ]; then
+              echo "⚠️ MCP Registry publish failed after $attempts attempts (exit $rc). Skipping without failing workflow."
+              exit 0
+            fi
+            echo "⚠️ Publish failed (exit $rc). Retrying in ${delay}s... (attempt ${attempts}/${max_attempts})"
+            sleep $delay
+            delay=$((delay*2))
+          done
+          echo "✅ MCP Registry publish succeeded."

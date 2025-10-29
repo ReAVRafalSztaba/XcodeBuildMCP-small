@@ -1,0 +1,262 @@
+import { McpServer, RegisteredTool } from '@camsoft/mcp-sdk/server/mcp.js';
+import { loadPlugins } from '../core/plugin-registry.ts';
+import { ToolResponse } from '../types/common.ts';
+import { log } from './logger.ts';
+
+// Parse disabled/enabled tool env once
+function getDisabledTools(): Set<string> {
+  const raw = (process.env.XCODEBUILDMCP_DISABLED_TOOLS || '').trim();
+  if (!raw) return new Set();
+  return new Set(
+    raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0),
+  );
+}
+
+function getEnabledTools(): Set<string> | null {
+  const raw = (process.env.XCODEBUILDMCP_ENABLED_TOOLS || '').trim();
+  if (!raw) return null;
+  const set = new Set(
+    raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0),
+  );
+  return set.size > 0 ? set : null;
+}
+
+function isToolAllowed(name: string, enabled: Set<string> | null, disabled: Set<string>): boolean {
+  if (enabled && !enabled.has(name)) return false;
+  if (disabled.has(name)) return false;
+  return true;
+}
+
+// Global registry to track registered tools for cleanup
+const toolRegistry = new Map<string, RegisteredTool>();
+
+/**
+ * Register a tool and track it for potential removal
+ */
+export function registerAndTrackTool(
+  server: McpServer,
+  name: string,
+  config: Parameters<McpServer['registerTool']>[1],
+  callback: Parameters<McpServer['registerTool']>[2],
+): RegisteredTool {
+  const registeredTool = server.registerTool(name, config, callback);
+  toolRegistry.set(name, registeredTool);
+  return registeredTool;
+}
+
+/**
+ * Register multiple tools and track them for potential removal
+ */
+export function registerAndTrackTools(
+  server: McpServer,
+  tools: Parameters<McpServer['registerTools']>[0],
+): RegisteredTool[] {
+  const registeredTools = server.registerTools(tools);
+
+  // Track each registered tool
+  tools.forEach((tool, index) => {
+    if (registeredTools[index]) {
+      toolRegistry.set(tool.name, registeredTools[index]);
+    }
+  });
+
+  return registeredTools;
+}
+
+/**
+ * Check if a tool is already registered
+ */
+export function isToolRegistered(name: string): boolean {
+  return toolRegistry.has(name);
+}
+
+/**
+ * Remove a specific tracked tool by name
+ */
+export function removeTrackedTool(name: string): boolean {
+  const tool = toolRegistry.get(name);
+  if (!tool) {
+    return false;
+  }
+
+  try {
+    tool.remove();
+    toolRegistry.delete(name);
+    log('debug', `✅ Removed tool: ${name}`);
+    return true;
+  } catch (error) {
+    log('error', `❌ Failed to remove tool ${name}: ${error}`);
+    return false;
+  }
+}
+
+/**
+ * Remove multiple tracked tools by names
+ */
+export function removeTrackedTools(names: string[]): string[] {
+  const removedTools: string[] = [];
+
+  for (const name of names) {
+    if (removeTrackedTool(name)) {
+      removedTools.push(name);
+    }
+  }
+
+  return removedTools;
+}
+
+/**
+ * Remove all currently tracked tools
+ */
+export function removeAllTrackedTools(): void {
+  const toolNames = Array.from(toolRegistry.keys());
+
+  if (toolNames.length === 0) {
+    return;
+  }
+
+  log('info', `Removing ${toolNames.length} tracked tools...`);
+
+  const removedTools = removeTrackedTools(toolNames);
+  log('info', `✅ Removed ${removedTools.length} tracked tools`);
+}
+
+/**
+ * Get the number of currently tracked tools
+ */
+export function getTrackedToolCount(): number {
+  return toolRegistry.size;
+}
+
+/**
+ * Get the names of currently tracked tools
+ */
+export function getTrackedToolNames(): string[] {
+  return Array.from(toolRegistry.keys());
+}
+
+/**
+ * Register only discovery tools (discover_tools, discover_projs) with tracking
+ */
+export async function registerDiscoveryTools(server: McpServer): Promise<void> {
+  const plugins = await loadPlugins();
+  let registeredCount = 0;
+
+  // Only register discovery tools initially
+  const discoveryTools = [];
+  for (const plugin of plugins.values()) {
+    // Only load discover_tools and discover_projs initially - other tools will be loaded via workflows
+    if (plugin.name === 'discover_tools' || plugin.name === 'discover_projs') {
+      discoveryTools.push({
+        name: plugin.name,
+        config: {
+          description: plugin.description ?? '',
+          inputSchema: plugin.schema,
+        },
+        // Adapt callback to match SDK's expected signature
+        callback: (args: unknown): Promise<ToolResponse> =>
+          plugin.handler(args as Record<string, unknown>),
+      });
+      registeredCount++;
+    }
+  }
+
+  // Register discovery tools using bulk registration with tracking
+  if (discoveryTools.length > 0) {
+    registerAndTrackTools(server, discoveryTools);
+  }
+
+  log('info', `✅ Registered ${registeredCount} discovery tools in dynamic mode.`);
+}
+
+/**
+ * Register selected workflows based on environment variable
+ */
+export async function registerSelectedWorkflows(
+  server: McpServer,
+  workflowNames: string[],
+): Promise<void> {
+  const { loadWorkflowGroups } = await import('../core/plugin-registry.js');
+  const workflowGroups = await loadWorkflowGroups();
+  const selectedTools = [] as Array<{
+    name: string;
+    config: { description: string; inputSchema: unknown };
+    callback: (args: unknown) => Promise<ToolResponse>;
+  }>;
+
+  const disabled = getDisabledTools();
+  const enabled = getEnabledTools();
+
+  for (const workflowName of workflowNames) {
+    const workflow = workflowGroups.get(workflowName.trim());
+    if (!workflow) continue;
+
+    for (const tool of workflow.tools) {
+      if (!isToolAllowed(tool.name, enabled, disabled)) continue;
+      selectedTools.push({
+        name: tool.name,
+        config: {
+          description: tool.description ?? '',
+          inputSchema: tool.schema,
+        },
+        callback: (args: unknown): Promise<ToolResponse> =>
+          tool.handler(args as Record<string, unknown>),
+      });
+    }
+  }
+
+  if (selectedTools.length > 0) {
+    server.registerTools(selectedTools);
+  }
+
+  log(
+    'info',
+    `✅ Registered ${selectedTools.length} tools from workflows: ${workflowNames.join(', ')}${disabled.size ? ` (disabled: ${Array.from(disabled).join(', ')})` : ''}`,
+  );
+}
+
+/**
+ * Register all tools (static mode) - no tracking needed since these won't be removed
+ */
+export async function registerAllToolsStatic(server: McpServer): Promise<void> {
+  const plugins = await loadPlugins();
+  const allTools = [] as Array<{
+    name: string;
+    config: { description: string; inputSchema: unknown };
+    callback: (args: unknown) => Promise<ToolResponse>;
+  }>;
+
+  const disabled = getDisabledTools();
+  const enabled = getEnabledTools();
+
+  for (const plugin of plugins.values()) {
+    // Exclude discovery tools in static mode - they should only be available in dynamic mode
+    if (plugin.name === 'discover_tools') continue;
+
+    if (!isToolAllowed(plugin.name, enabled, disabled)) continue;
+
+    allTools.push({
+      name: plugin.name,
+      config: {
+        description: plugin.description ?? '',
+        inputSchema: plugin.schema,
+      },
+      // Adapt callback to match SDK's expected signature
+      callback: (args: unknown): Promise<ToolResponse> =>
+        plugin.handler(args as Record<string, unknown>),
+    });
+  }
+
+  // Register all tools using bulk registration (no tracking since static tools aren't removed)
+  if (allTools.length > 0) {
+    server.registerTools(allTools);
+  }
+
+  log('info', `✅ Registered ${allTools.length} tools in static mode${disabled.size ? ` (disabled: ${Array.from(disabled).join(', ')})` : ''}.`);
+}
