@@ -7,9 +7,13 @@ yarn-error.log*
 # TypeScript build output
 dist/
 /build/
+# Allow committing build/ for GitHub npx install
+!build/
 *.tsbuildinfo
 
 # Auto-generated files
+# Allow committing generated version for GitHub npx install
+!src/version.ts
 src/version.ts
 src/core/generated-plugins.ts
 src/core/generated-resources.ts
